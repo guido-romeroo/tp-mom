@@ -2,14 +2,13 @@ import pika
 import random
 import string
 from .middleware import MessageMiddlewareCloseError, MessageMiddlewareDisconnectedError, MessageMiddlewareMessageError, MessageMiddlewareQueue, MessageMiddlewareExchange
-from pika.exceptions import ChannelClosed, UnroutableError, NackError
+from pika.exceptions import AMQPChannelError, AMQPConnectionError
 
 class MessageMiddlewareQueueRabbitMQ(MessageMiddlewareQueue):
 
     def __init__(self, host, queue_name):
         self.connection = pika.BlockingConnection(pika.ConnectionParameters(host=host))
         self.channel = self.connection.channel()
-        self.channel.confirm_delivery() # publisher confirms
 
         self.queue_name = queue_name
         self.channel.queue_declare(queue=queue_name, durable=True) # queues durables para resistir caídas del broker
@@ -17,12 +16,11 @@ class MessageMiddlewareQueueRabbitMQ(MessageMiddlewareQueue):
     def close(self):
         try:
             self.connection.close()
-        except:
-            raise MessageMiddlewareCloseError()
+        except Exception as e:
+            raise MessageMiddlewareCloseError(e)
 
     def send(self, message):
-        if self.channel.is_closed or self.connection.is_closed:
-            raise MessageMiddlewareDisconnectedError()
+        self.validate_connection()
         try:
             self.channel.basic_publish(exchange='', routing_key=self.queue_name, body=message, properties=pika.BasicProperties(delivery_mode=2)) # delivery_mode=2 para persistir los mensajes
         except Exception as e:
@@ -38,15 +36,18 @@ class MessageMiddlewareQueueRabbitMQ(MessageMiddlewareQueue):
 
         try:
             self.channel.start_consuming()
-        except ChannelClosed:
+        except (AMQPConnectionError, AMQPChannelError):
             raise MessageMiddlewareDisconnectedError()
         except Exception as e:
             raise MessageMiddlewareMessageError(e)
 
     def stop_consuming(self):
+        self.validate_connection()
+        self.channel.stop_consuming()
+
+    def validate_connection(self):
         if self.channel.is_closed or self.connection.is_closed:
             raise MessageMiddlewareDisconnectedError()
-        self.channel.stop_consuming()
 
 class MessageMiddlewareExchangeRabbitMQ(MessageMiddlewareExchange):
     
