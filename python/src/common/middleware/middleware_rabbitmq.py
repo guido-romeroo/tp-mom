@@ -11,35 +11,36 @@ class MessageMiddlewareQueueRabbitMQ(MessageMiddlewareQueue):
         self.channel = self.connection.channel()
 
         self.queue_name = queue_name
-        self.channel.queue_declare(queue=queue_name, durable=True) # queues durables para resistir caídas del broker
+        self.channel.queue_declare(queue=queue_name, durable=True)
 
     def close(self):
         try:
             self.connection.close()
         except Exception as e:
-            raise MessageMiddlewareCloseError(e)
+            raise MessageMiddlewareCloseError() from e
 
     def send(self, message):
         self.validate_connection()
         try:
             self.channel.basic_publish(exchange='', routing_key=self.queue_name, body=message, properties=pika.BasicProperties(delivery_mode=2)) # delivery_mode=2 para persistir los mensajes
+        except (AMQPConnectionError, AMQPChannelError) as e:
+            raise MessageMiddlewareDisconnectedError() from e
         except Exception as e:
-            raise MessageMiddlewareMessageError(e)
+            raise MessageMiddlewareMessageError() from e
 
         
     def start_consuming(self, on_message_callback):
         def callback(ch, method, properties, body):
             on_message_callback(body, lambda: ch.basic_ack(delivery_tag=method.delivery_tag), lambda: ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True))
-            # preguntar en clase si se debe usar requeue en las working queues
 
+        self.channel.basic_qos(prefetch_count=1) 
         self.channel.basic_consume(queue=self.queue_name, on_message_callback=callback) 
-
         try:
             self.channel.start_consuming()
         except (AMQPConnectionError, AMQPChannelError):
             raise MessageMiddlewareDisconnectedError()
         except Exception as e:
-            raise MessageMiddlewareMessageError(e)
+            raise MessageMiddlewareMessageError() from e
 
     def stop_consuming(self):
         self.validate_connection()
